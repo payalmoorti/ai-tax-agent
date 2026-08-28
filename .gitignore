@@ -1,0 +1,29 @@
+# Secrets
+.env
+
+.venv/
+.venv-amsted/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+local_test_files/
+
+# Local PDF generator
+create_dense_test_pdf.py
+
+# Generated ingestion artifacts
+sample_outputs/**/*.json
+sample_outputs/**/*.jsonl
+sample_outputs/**/*.log
+sample_outputs/raw/*
+!sample_outputs/**/.gitkeep
+
+# Archived pipeline runs
+sample_output_archives/
