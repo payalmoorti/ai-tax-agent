@@ -20,7 +20,6 @@ from .cleaning import clean_document_text
 from .email_thread import build_thread, normalize_subject, render_thread, split_thread
 from .models import NA, DocumentMetadata, ExtractedDocument, NormalizedDocument
 from .utils import stable_id
-from .email_headers import sanitize_subject, unwrap_header_lines
 
 _TYPE_LABELS = {
     ".pdf": "pdf", ".docx": "docx", ".pptx": "pptx", ".xlsx": "xlsx",
@@ -38,35 +37,11 @@ _SOURCE_TYPE_BY_EXT = {
 }
 
 # Heuristics for detecting an email thread inside a PDF/DOCX export.
-
-# --- Markdown-tolerant header patterns -------------------------------------
-# Docling exports Markdown, so PDF email headers arrive decorated:
-#   **From:**   __From:__   ## From:   > From:   - **From:**   | From: |
-_MD_LEAD = r"[>\-\*\#\|\s_]*"   # decoration before a label (hyphens allowed)
-_SEP_LEAD = r"[>\*\#\|\s_]*"     # decoration before ----- (NO hyphens: they are the separator)
-_MD_SEP = r"[\*_\s]*"            # decoration around the colon
-_MD_TAIL = r"[\*_\s\|]*"           # trailing decoration, e.g. **-----Original Message-----**
-_MD_TRAIL = re.compile(r"[\*_\s\|]+$")
-
-
-def _strip_md(value: str) -> str:
-    """Remove Markdown decoration left on a captured header value."""
-    return _MD_TRAIL.sub("", (value or "").strip()).strip()
-
-
-# Heuristics for detecting an email thread inside a PDF/DOCX export.
 _THREAD_SIGNAL = re.compile(
-    rf"(?im)^(?:"
-    rf"{_MD_LEAD}from{_MD_SEP}:{_MD_SEP}.+"
-    rf"|{_SEP_LEAD}-{{2,}}\s*original\s+message\s*-{{2,}}{_MD_TAIL}"
-    rf"|{_SEP_LEAD}-{{2,}}\s*forwarded\s+message\s*-{{2,}}{_MD_TAIL}"
-    rf"|{_MD_LEAD}on\s+.{{4,80}}\s+wrote\s*:"
-    rf")\s*$"
+    r"(?im)^\s*(?:from\s*:\s*.+|-{2,}\s*original\s+message\s*-{2,}|"
+    r"-{2,}\s*forwarded\s+message\s*-{2,}|on\s+.{4,80}\s+wrote\s*:)\s*$"
 )
-
-_SUBJECT_LINE = re.compile(
-    rf"(?im)^{_MD_LEAD}subject{_MD_SEP}:{_MD_SEP}[ \t]*(.+?)[ \t]*$"
-)
+_SUBJECT_LINE = re.compile(r"(?im)^\s*subject\s*:\s*(.+?)\s*$")
 
 _TAX_YEAR = re.compile(
     r"\b(?:tax\s+year|fiscal\s+year|taxable\s+year|TY|FY)\s*[:\-]?\s*(\d{4})\b"
@@ -120,7 +95,6 @@ def normalize(
 
     # An email thread exported to PDF/DOCX still needs message segmentation.
     if not is_thread and document_type in {"pdf", "docx", "text", "html", "markdown"}:
-        text = unwrap_header_lines(extracted.text)
         if looks_like_email_thread(extracted.text):
             subject_match = _SUBJECT_LINE.search(extracted.text)
             raw_subject = subject_match.group(1).strip() if subject_match else NA
