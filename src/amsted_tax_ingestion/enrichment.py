@@ -58,6 +58,27 @@ Rules:
 - confidence: float 0.0-1.0 for your overall certainty.
 - rationale: ONE short sentence citing the specific evidence you relied on.
 
+JURISDICTION — return the jurisdiction whose tax is AT ISSUE, not every
+jurisdiction the document mentions.
+
+Apply these in order and stop at the first that fits:
+
+1. Exposure analyzed across two or more US states, cities, or localities
+   -> "Multistate", even if one is named more often than the others.
+2. Exposure analyzed across two or more countries -> "Multinational".
+3. A single US state or locality at issue -> that state. A named city maps to
+   its state (New York City -> New York; Chicago -> Illinois).
+4. A single foreign country at issue -> that country.
+5. "Federal" ONLY when US federal tax is itself the subject of the analysis.
+   Federal status mentioned as background — S corporation, ESOP, consolidated
+   return, check-the-box, entity classification — does NOT make a document
+   Federal when the tax being analyzed is state, local, or foreign.
+6. Otherwise "n/a".
+
+Deciding test: which taxing authority could actually assess tax here, or whose
+law answers the question? In `rationale`, quote the specific phrase from the
+document that drove your choice.
+
 Allowed jurisdiction: {json.dumps(JURISDICTIONS)}
 Allowed tax_topic: {json.dumps(TAX_TOPICS)}
 Allowed authority_level: {json.dumps(AUTHORITY_LEVELS)}

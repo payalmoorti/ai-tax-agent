@@ -39,25 +39,43 @@ _QUOTE_MARKER = re.compile(r"^\s*>{1,}\s?", re.MULTILINE)
 
 _PHONE = re.compile(
     r"""(?xi)
-    (?:(?:tel|telephone|phone|mobile|cell|direct|office|fax|f|t|m|o|d)\s*[:.]?\s*)?
-    (?:\+?\d{1,3}[\s.\-]?)?
-    (?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}
-    (?:\s*(?:x|ext\.?|extension)\s*\d{1,6})?
+    (?:\b(?:tel|telephone|phone|mobile|cell|direct|office|fax)\b[ \t]*[:.]?[ \t]*)?
+    (?:\+?\d{1,3}[ \t.\-]?)?
+    (?:\(\d{3}\)|\d{3})[ \t.\-]\d{3}[ \t.\-]\d{4}
+    (?:[ \t]*(?:x|ext\.?|extension)[ \t]*\d{1,6})?
     """
+)
+
+_STREET_SUFFIX = (
+    "street|st|avenue|ave|boulevard|blvd|road|rd|drive|dr|lane|ln|way|court|ct|"
+    "place|pl|parkway|pkwy|highway|hwy|suite|ste|floor|fl|plaza|tower|centre|center"
 )
 
 _STREET = re.compile(
-    r"""(?xim)
-    ^.*?\b\d{1,6}\s+[\w.\-]+(?:\s+[\w.\-]+){0,4}\s+
-    (?:street|st|avenue|ave|boulevard|blvd|road|rd|drive|dr|lane|ln|way|court|ct|
-       place|pl|parkway|pkwy|highway|hwy|suite|ste|floor|fl|plaza)\b
-    .*$
+    rf"""(?xim)
+    ^.*?\b(?:
+        \d{{1,6}}
+      | One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten
+    )\s+[\w.\-]+(?:\s+[\w.\-]+){{0,4}}\s+(?:{_STREET_SUFFIX})\b.*$
     """
 )
 
-_CITY_STATE_ZIP = re.compile(
-    r"(?im)^\s*[A-Z][\w.\-]+(?:[ \-][A-Z][\w.\-]+)*,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?\s*$"
+_US_STATES = (
+    "Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|"
+    "Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|"
+    "Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|"
+    "Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|"
+    "New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|"
+    "Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|"
+    "Virginia|Washington|West Virginia|Wisconsin|Wyoming"
 )
+
+
+_CITY_STATE_ZIP = re.compile(
+    rf"(?im)^\s*[A-Z][\w.\-]+(?:[ \-][A-Z][\w.\-]+)*,\s*"
+    rf"(?:[A-Z]{{2}}|{_US_STATES})\s+\d{{5}}(?:-\d{{4}})?\s*$"
+)
+
 
 _URL = re.compile(r"(?i)\b(?:https?://|www\.)\S+")
 _EMAIL_ADDR = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
@@ -65,6 +83,9 @@ _EMAIL_ADDR = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 # --------------------------------------------------------------------------- #
 # Signature / disclaimer
 # --------------------------------------------------------------------------- #
+_PERSON_NAME = re.compile(
+    r"^\s*[A-Z][a-z'\-]+(?:\s+[A-Z]\.?)?(?:\s+[A-Z][a-z'\-]+){1,2}\s*$"
+)
 
 _SIG_DELIMITER = re.compile(r"^\s*(?:--\s*|__+|—{2,}|\*{3,})\s*$", re.MULTILINE)
 
@@ -100,15 +121,20 @@ _DISCLAIMER = re.compile(
 _JOB_TITLE = re.compile(
     r"""(?xi)
     \b(?:
-        vice\s+president | senior\s+manager | managing\s+director | director |
-        manager | partner | principal | associate | analyst | consultant |
-        controller | treasurer | counsel | attorney | cpa | tax\s+\w+ |
-        chief\s+\w+\s+officer | c[efot]o
+        vice\s+president | senior\s+\w+ | managing\s+director | general\s+counsel |
+        assistant\s+\w+ | executive\s+\w+ | corporate\s+\w+ | director | manager |
+        partner | principal | associate | analyst | consultant | controller |
+        treasurer | counsel | attorney | cpa | tax\s+\w+ |
+        chief\s+\w+\s+officer | c[efot]o | vp
     )\b
     """
 )
 
-_COMPANY_SUFFIX = re.compile(r"(?i)\b(?:inc|llc|llp|ltd|corp|corporation|company|co|plc|group)\b\.?")
+
+_COMPANY_SUFFIX = re.compile(
+    r"(?i)\b(?:inc|inc\.|incorporated|llc|l\.l\.c\.|llp|ltd|limited|corp|"
+    r"corporation|company|co|plc|group|holdings|industries|partners)\b\.?"
+)
 
 # Placeholders make redaction visible and reversible in review.
 PHONE_TOKEN = "[phone removed]"
@@ -117,7 +143,7 @@ SIGNATURE_TOKEN = "[signature removed]"
 DISCLAIMER_TOKEN = "[disclaimer removed]"
 
 
-def _contact_density(line: str) -> int:
+def contact_density(line: str) -> int:
     """How strongly a line looks like signature contact material."""
     score = 0
     if _PHONE.search(line):
@@ -136,20 +162,74 @@ def _contact_density(line: str) -> int:
         score += 1
     return score
 
+def _is_signature_line(line: str, *, max_len: int = 70) -> bool:
+    """A single line that could belong to a signature block.
+
+    Short, not a sentence, and either a name, a contact detail, or an
+    affiliation. Prose fails on length or sentence shape.
+    """
+    if len(line) > max_len:
+        return False
+    words = line.split()
+    if len(words) > 9:
+        return False
+    if line.endswith((".", "!", "?")) and len(words) > 5:
+        return False
+    if contact_density(line) >= 1:
+        return True
+    return bool(_PERSON_NAME.match(line))
+
+
+def looks_like_signature_block(lines: list[str]) -> bool:
+    """Shape test for a signature with no sign-off and no delimiter.
+
+    Legal and corporate signatures often appear as a bare run of lines:
+
+        Rosemary G. Feit
+        Assistant General Counsel—Litigation
+        Amsted Industries Incorporated
+
+    No "Best regards", no "--". Detected by shape: a person's name followed by
+    short affiliation lines carrying at least one contact signal.
+    """
+    lines = [l for l in lines if l.strip()]
+    if not 2 <= len(lines) <= 8:
+        return False
+
+    for line in lines:
+        stripped = line.strip()
+        if len(stripped) > 70:
+            return False
+        if stripped.endswith((".", "!", "?")) and len(stripped.split()) > 6:
+            return False
+
+    first = lines[0].strip()
+    if not _PERSON_NAME.match(first):
+        return False
+    # "Assistant General Counsel" is name-shaped but is a title, not a person.
+    if _JOB_TITLE.search(first) or _COMPANY_SUFFIX.search(first):
+        return False
+
+    return sum(contact_density(l) for l in lines) >= 1
+
+
+
 
 def strip_signature(text: str, *, max_block_lines: int = 12) -> str:
     """Remove a trailing signature block.
 
-    Anchors on an explicit delimiter ("--") or a sign-off line, then only removes
-    the trailing block if it scores as contact material. Falls back to scanning
-    the tail for a dense contact cluster.
+    Anchors, in order:
+      1. an explicit "--" delimiter
+      2. a sign-off line ("Best regards,")
+      3. a dense contact cluster in the tail
+      4. signature-block SHAPE — name line plus short affiliation lines
     """
     if not text.strip():
         return text
 
     lines = text.split("\n")
 
-    # 1. Explicit delimiter — everything after the LAST one, if it's short enough.
+    # 1. Explicit delimiter.
     for match in reversed(list(_SIG_DELIMITER.finditer(text))):
         head, tail = text[: match.start()], text[match.end():]
         if 0 < len(tail.strip().split("\n")) <= max_block_lines:
@@ -161,31 +241,40 @@ def strip_signature(text: str, *, max_block_lines: int = 12) -> str:
             block = lines[index + 1:]
             if not block:
                 return "\n".join(lines[: index + 1]).rstrip()
-            score = sum(_contact_density(l) for l in block)
+            score = sum(contact_density(l) for l in block)
             nonblank = [l for l in block if l.strip()]
-            # Keep the sign-off itself; drop the contact block beneath it.
             if score >= 2 or (nonblank and len(nonblank) <= 6 and score >= 1):
                 return "\n".join(lines[: index + 1]).rstrip()
             return text.rstrip()
 
-    # 3. No anchor: look for a dense contact cluster in the tail.
-    tail_start = max(0, len(lines) - max_block_lines)
-    tail = lines[tail_start:]
-    cut = None
-    for offset, line in enumerate(tail):
-        if not line.strip():
+    # 3 + 4. Walk UPWARD while lines still look signature-like.
+    cut = len(lines)
+    for index in range(len(lines) - 1, max(-1, len(lines) - max_block_lines - 1), -1):
+        stripped = lines[index].strip()
+        if not stripped:
+            if cut < len(lines):
+                continue          # a blank line inside the block is fine
+            cut = index
             continue
-        window = [l for l in tail[offset:] if l.strip()]
-        if not window or len(window) > 8:
+        if _is_signature_line(stripped):
+            cut = index
             continue
-        score = sum(_contact_density(l) for l in window)
-        if score >= 4 and all(len(l) < 120 for l in window):
-            cut = tail_start + offset
-            break
-    if cut is not None and cut > 0:
-        return "\n".join(lines[:cut]).rstrip()
+        break                     # prose: the block starts below this line
+
+    if cut >= len(lines):
+        return text.rstrip()
+
+    block = lines[cut:]
+    nonblank = [l for l in block if l.strip()]
+    if not nonblank or len(nonblank) > 8:
+        return text.rstrip()
+
+    score = sum(contact_density(l) for l in block)
+    if score >= 4 or looks_like_signature_block(block):
+        return "\n".join(lines[:cut]).rstrip() if cut > 0 else text.rstrip()
 
     return text.rstrip()
+
 
 
 def strip_disclaimers(text: str) -> str:

@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     azure_storage_connection_string: str = ""
     azure_blob_container_name: str = ""
     azure_table_name: str = "TaxAgentIngestionStatus"
+    azure_metadata_table_name: str = "TaxFilesMetadata"
 
     # --- Azure AI Search ---
     azure_search_endpoint: str = ""

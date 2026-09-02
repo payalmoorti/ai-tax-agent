@@ -32,7 +32,7 @@ from .extraction import ExtractionRouter, is_supported
 from .indexing import upload
 from .models import NA
 from .normalization import normalize
-from .storage import BlobSource, StatusStore
+from .storage import BlobSource, StatusStore, MetadataStore
 from .utils import safe_name, stable_id, write_json
 
 log = logging.getLogger(__name__)
@@ -145,7 +145,7 @@ class Pipeline:
 
     # ---------------- single document ----------------
 
-    def process_blob(self, blob, source, status, out: Path, *,
+    def process_blob(self, blob, source, status, metadata, out: Path, *,
                      dry_run: bool, skip_enrichment: bool,
                      force: bool, result: RunResult) -> None:
         blob_name = blob.name
@@ -161,9 +161,6 @@ class Pipeline:
                 blob_name=blob_name, document_type=document_type,
                 state=state, chunk_count=chunk_count, error=error,
             )
-
-        mark(DISCOVERED)
-
         if not is_supported(blob_name):
             log.info("Skipping unsupported file: %s", blob_name)
             result.skipped += 1
@@ -231,6 +228,12 @@ class Pipeline:
                 out / "chunked" / f"{doc.document_id}.json",
                 [c.model_dump(mode="json") for c in chunks],
             )
+            # Write business metadata to the optional metadata table.
+            if metadata is not None:
+                try:
+                    metadata.upsert(document_id, doc.metadata.model_dump())
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Metadata upsert failed for %s: %s", blob_name, exc)
             result.chunks_created += len(chunks)
             mark(CHUNKED, chunk_count=len(chunks))
 
@@ -312,6 +315,13 @@ class Pipeline:
                 status = StatusStore(s.azure_storage_connection_string, s.azure_table_name)
             except Exception as exc:  # noqa: BLE001
                 log.warning("Status tracking disabled: %s", exc)
+        metadata = None
+        # Optional separate metadata table; set `azure_metadata_table_name` in settings
+        if s.azure_storage_connection_string and getattr(s, "azure_metadata_table_name", None):
+            try:
+                metadata = MetadataStore(s.azure_storage_connection_string, s.azure_metadata_table_name)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Metadata tracking disabled: %s", exc)
 
         if not dry_run:
             from azure.core.exceptions import ResourceNotFoundError
@@ -347,7 +357,7 @@ class Pipeline:
         for blob in blobs:
             log.info("--- %s ---", blob.name)
             self.process_blob(
-                blob, source, status, out,
+                blob, source, status, metadata, out,
                 dry_run=dry_run, skip_enrichment=skip_enrichment,
                 force=force, result=result,
             )

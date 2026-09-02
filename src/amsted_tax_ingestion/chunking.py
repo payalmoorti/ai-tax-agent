@@ -28,6 +28,42 @@ class EnrichmentMissingError(RuntimeError):
     """Raised when chunking is attempted before enrichment succeeded."""
 
 
+_ADDRESS = re.compile(r"\s*<[^>]*>")
+_BARE_ADDRESS = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
+
+# Recipient lists get long. Past this many names, summarize the remainder.
+MAX_RECIPIENTS = 4
+
+
+def _display_name(value: str) -> str:
+    """'Maren Feldstein <m@x.example>' -> 'Maren Feldstein'.
+
+    Falls back to the local part when only a bare address is present, so
+    'tbarros@northline.example' becomes 'tbarros' rather than being dropped.
+    """
+    if not value or value == NA:
+        return ""
+    name = _ADDRESS.sub("", value).strip().strip('"').strip()
+    # A bare address has no angle brackets, so the substitution leaves it whole.
+    if name and _BARE_ADDRESS.fullmatch(name):
+        return name.split("@")[0]
+    if name:
+        return name
+    match = _BARE_ADDRESS.search(value)
+    return match.group(0).split("@")[0] if match else value.strip()
+
+
+def _format_recipients(values: list[str], limit: int = MAX_RECIPIENTS) -> str:
+    """Comma-joined display names, truncated with a count past the limit."""
+    names = [n for n in (_display_name(v) for v in values) if n]
+    if not names:
+        return ""
+    if len(names) <= limit:
+        return ", ".join(names)
+    return ", ".join(names[:limit]) + f" (+{len(names) - limit} more)"
+
+
+
 class Chunker:
     def __init__(
         self,
@@ -117,20 +153,34 @@ class Chunker:
 
     # ---------------- email thread strategy ----------------
 
-    def _message_header(self, message: EmailMessage) -> str:
-        """Header prepended to each message chunk so context survives retrieval."""
-        lines = []
+    def _message_header(self, message) -> str:
+        """Header prepended to each message chunk so context survives retrieval.
+
+        Order is deliberate: Subject and From first, because vector similarity
+        weights earlier tokens in a short chunk more heavily than trailing ones.
+        """
+        lines: list[str] = []
+
         if message.subject != NA:
             lines.append(f"Subject: {message.subject}")
-        if message.sender != NA:
-            lines.append(f"From: {message.sender}")
-        if message.recipients:
-            lines.append(f"To: {', '.join(message.recipients)}")
-        if message.cc:
-            lines.append(f"Cc: {', '.join(message.cc)}")
+
+        sender = _display_name(message.sender)
+        if sender:
+            lines.append(f"From: {sender}")
+
+        recipients = _format_recipients(message.recipients)
+        if recipients:
+            lines.append(f"To: {recipients}")
+
+        cc = _format_recipients(message.cc)
+        if cc:
+            lines.append(f"Cc: {cc}")
+
         if message.message_date != NA:
             lines.append(f"Date: {message.message_date}")
+
         return "\n".join(lines)
+
 
     def _chunk_thread(self, doc: NormalizedDocument) -> list[Chunk]:
         messages = doc.messages

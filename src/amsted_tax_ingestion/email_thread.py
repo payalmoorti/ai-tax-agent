@@ -91,33 +91,54 @@ def normalize_subject(subject: str) -> str:
 
 
 
-
-
 _AMPM = re.compile(r"(?i)\b[ap]\.?m\.?\b")
 
+_TRAILING_TZ = re.compile(
+    r"(?i)\s*\(?\b(?:UTC|GMT|Z|"
+    r"[ECMP][SD]T|AKDT|AKST|HST|"
+    r"BST|CET|CEST|EET|EEST|WET|WEST|"
+    r"IST|JST|KST|SGT|HKT|AEST|AEDT|NZST|NZDT|BRT|ART"
+    r")\b\)?\s*$"
+)
+
+
 _DATE_FORMATS = [
+    # Outlook
     "%A, %B %d, %Y %I:%M %p", "%A, %B %d, %Y %I:%M:%S %p", "%A, %B %d, %Y %H:%M",
-    "%A, %b %d, %Y %I:%M %p",
-    "%B %d, %Y %I:%M %p", "%b %d, %Y %I:%M %p", "%B %d, %Y at %I:%M %p",
+    "%A, %b %d, %Y %I:%M %p", "%A, %b %d, %Y %H:%M",
+    # Apple Mail, comma before "at"
+    "%b %d, %Y, at %I:%M %p", "%b %d, %Y, at %I:%M:%S %p",
+    "%b %d, %Y, at %H:%M", "%b %d, %Y, at %H:%M:%S",
+    "%B %d, %Y, at %I:%M %p", "%B %d, %Y, at %I:%M:%S %p",
+    "%B %d, %Y, at %H:%M", "%B %d, %Y, at %H:%M:%S",
+    # Apple Mail, no comma
+    "%b %d, %Y at %I:%M %p", "%b %d, %Y at %I:%M:%S %p",
+    "%b %d, %Y at %H:%M", "%b %d, %Y at %H:%M:%S",
+    "%B %d, %Y at %I:%M %p", "%B %d, %Y at %I:%M:%S %p",
+    "%B %d, %Y at %H:%M", "%B %d, %Y at %H:%M:%S",
+    # Plain
+    "%B %d, %Y %I:%M %p", "%b %d, %Y %I:%M %p",
+    "%B %d, %Y %H:%M", "%b %d, %Y %H:%M",
     "%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M", "%m/%d/%Y",
     "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",
-    "%d %B %Y %H:%M", "%d %b %Y %H:%M", "%B %d, %Y", "%b %d, %Y",
+    "%d %B %Y %H:%M", "%d %b %Y %H:%M",
+    "%B %d, %Y", "%b %d, %Y",
 ]
 
 
+
 def parse_date(value: str) -> str:
-    """Best-effort date normalization to ISO 8601. Returns the raw string on failure.
+    """Normalize an email date to ISO 8601. Returns the raw string on failure.
 
     Note: email.utils.parsedate_to_datetime silently DROPS the AM/PM marker on
-    Outlook-style dates ("Tuesday, August 18, 2026 2:14 PM" -> 02:14), so explicit
-    formats are tried first whenever an AM/PM marker is present.
+    Outlook-style dates, so explicit formats are tried first when one is present.
     """
     if not value or value == NA:
         return NA
 
     text = value.strip()
     cleaned = re.sub(r"\s+", " ", text).replace("\u202f", " ").replace("\u00a0", " ")
-    cleaned = re.sub(r"\s*\([A-Z]{2,5}\)\s*$", "", cleaned).strip()  # trailing (CDT)
+    cleaned = _TRAILING_TZ.sub("", cleaned).strip().rstrip(",").strip()
 
     has_ampm = bool(_AMPM.search(cleaned))
 
@@ -139,7 +160,8 @@ def parse_date(value: str) -> str:
         except (TypeError, ValueError):
             pass
 
-    return text  # keep the raw string rather than losing the information
+    return text
+  # keep the raw string rather than losing the information
 
 
 def _page_map(text: str) -> list[tuple[int, int]]:
@@ -178,14 +200,16 @@ def split_thread(text: str, *, default_subject: str = NA) -> list[EmailMessage]:
         return []
 
     # Fold wrapped recipient lines back onto their header line before parsing.
+    # pdfplumber preserves the PDF's visual wrapping, so a long Cc: spills onto
+    # the next line and would otherwise become a message body.
     text = unwrap_header_lines(text)
 
     pages = _page_map(text)
     boundaries: list[dict] = []
 
-    # --- Outlook-style header blocks: From:/Sent:/To:/Cc:/Subject: ---
+    # Outlook-style header blocks: From:/Sent:/To:/Cc:/Subject:
     for match in _HEADER_BLOCK.finditer(text):
-        boundary = clean_boundary({
+        boundaries.append(clean_boundary({
             "start": match.start(),
             "body_start": match.end(),
             "sender": match.group("sender"),
@@ -193,15 +217,14 @@ def split_thread(text: str, *, default_subject: str = NA) -> list[EmailMessage]:
             "to": match.group("to"),
             "cc": match.group("cc"),
             "subject": match.group("subject"),
-        })
-        boundaries.append(boundary)
+        }))
 
-    # --- "On <date>, <sender> wrote:" separators ---
+    # "On <date>, <sender> wrote:" separators
     for match in ON_WROTE.finditer(text):
         # Skip if a header block already covers this position.
         if any(abs(match.start() - b["start"]) < 40 for b in boundaries):
             continue
-        boundary = clean_boundary({
+        boundaries.append(clean_boundary({
             "start": match.start(),
             "body_start": match.end(),
             "sender": match.group("sender"),
@@ -209,8 +232,7 @@ def split_thread(text: str, *, default_subject: str = NA) -> list[EmailMessage]:
             "to": "",
             "cc": "",
             "subject": "",
-        })
-        boundaries.append(boundary)
+        }))
 
     boundaries.sort(key=lambda b: b["start"])
 
@@ -241,18 +263,21 @@ def split_thread(text: str, *, default_subject: str = NA) -> list[EmailMessage]:
             ))
 
     for position, boundary in enumerate(boundaries):
-        end = boundaries[position + 1]["start"] if position + 1 < len(boundaries) else len(text)
+        end = (
+            boundaries[position + 1]["start"]
+            if position + 1 < len(boundaries)
+            else len(text)
+        )
         body = clean_message_body(text[boundary["body_start"]:end])
         if not body:
             continue
-        subject = normalize_subject(boundary["subject"] or default_subject)
         messages.append(EmailMessage(
             message_index=0,
             sender=boundary["sender"] or NA,
             recipients=parse_recipients(boundary["to"]),
             cc=parse_recipients(boundary["cc"]),
             message_date=parse_date(boundary["date"]),
-            subject=subject,
+            subject=normalize_subject(boundary["subject"] or default_subject),
             body=body,
             page_number=_page_for(boundary["start"], pages),
         ))
