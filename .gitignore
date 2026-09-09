@@ -33,3 +33,4 @@ eval/reports/*
 !eval/reports/.gitkeep
 
 eval/gold_set/*
+!eval/gold_set/.gitkeep
