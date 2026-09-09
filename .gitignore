@@ -31,3 +31,5 @@ sample_output_archives/
 # Generated eval reports
 eval/reports/*
 !eval/reports/.gitkeep
+
+eval/gold_set/*
